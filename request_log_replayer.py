@@ -115,52 +115,61 @@ class RequestLogReplayer(object):
         ...     {"host": "www.google.com", "uri": "/1", "method": "GET", "format": "JSON", "interval": 0, "time": datetime(2011, 3, 25, 14, 32, 0), "parameters": {}},
         ...     {"host": "www.baidu.com", "uri": "/2", "method": "GET", "format": "HTML", "interval": 5, "time": datetime(2011, 3, 25, 14, 32, 5), "parameters": {"v": 1}},
         ... ]
-        >>> replayer.replay_requests(requests, speed=0.5, concurrency=3)
-        Started replays.
-        <BLANKLINE>
-        Replayed GET "/1" on "www.google.com" at 2011-03-25 14:32:00
-        Processed as JSON
-        Completed at 2011-03-24 14:43:00
-        <BLANKLINE>
-        Replayed GET "/2" on "www.baidu.com" at 2011-03-25 14:32:05
-        Processed as HTML
-        Completed at 2011-03-24 14:43:05
+        >>> result = replayer.replay_requests(requests, speed=0.5, concurrency=3)
+        Started 6 replays.
         <BLANKLINE>
 
         """
         # Group requests by intervals
-        groups = {}
+        self.intervals = []
+        self.groups = {}
         for request in requests:
-            if request['interval'] in groups:
-                groups[request['interval']].append(request)
+            if request['interval'] not in self.groups:
+                self.intervals.append(request['interval'])
+                self.groups[request['interval']] = [request]
             else:
-                groups[request['interval']] = [request]
+                self.groups[request['interval']].append(request)
 
-        timers = [self._create_timer(interval, group, concurrency, speed) \
-                for interval, group in groups.items()]
+        if not self.intervals:
+            return
+
         print("Started %s replays.\n" % (len(requests) * concurrency,))
-        for timer in timers:
-            timer.start()
+        self.intervals.sort()
+        timer = self._create_timer(0, self.intervals[0], concurrency, speed)
+        timer.start()
 
-    def send_requests(self, requests):
-        for request in requests:
+    def send_requests(self, interval, concurrency, speed):
+        try:
+            next_interval = self.intervals[self.intervals.index(interval) + 1]
+            timer = self._create_timer((next_interval - interval) / concurrency, next_interval, concurrency, speed)
+            timer.start()
+        except IndexError:
+            pass
+
+        for request in self.groups[interval]:
             self.send_request(request)
 
-    def send_request(self, request):
+    def send_request(self, request, test=False):
         """
         Send a HTTP request to server
     
         >>> replayer = RequestLogReplayer(verbose=False)
         >>> request = {'host': 'www.zuikong.com', 'uri': '/xs/46/ping.json', 'method': 'POST', 'format': 'JSON', 'time':  datetime(2011, 3, 25, 14, 32, 5), 'parameters': {'v': 2}}
-        >>> replayer.send_request(request)
+        >>> result = replayer.send_request(request, test=True)
+        Replayed POST "/xs/46/ping.json" on "www.zuikong.com" at 2011-03-25 14:32:05
+        Processed as JSON
+        Parameters: {'v': 2}
+        # Started at 2011-03-27 22:21:42. Completed at 2011-03-27 22:21:42. Taken 2 ms
+        <BLANKLINE>
+        <BLANKLINE>
         >>> request = {'host': 'www.zuikong.com', 'uri': '/xs/46/ping.json', 'method': 'GET', 'format': 'JSON', 'time':  datetime(2011, 3, 25, 14, 32, 5), 'parameters': {'v': 2}}
-        >>> replayer.send_request(request)
-        {
-          "title": "\u51e1\u4eba\u4fee\u4ed9\u4f20",
-          "version": 1712,
-          "article_title": "\u7b2c\u4e00\u5343\u516d\u767e\u516b\u5341\u516b\u7ae0",
-          "article_url": "http://www.zuikong.com/xs/46/zj/1071172"
-        }
+        >>> result = replayer.send_request(request, test=True)
+        Replayed GET "/xs/46/ping.json" on "www.zuikong.com" at 2011-03-25 14:32:05
+        Processed as JSON
+        Parameters: {'v': 2}
+        # Started at 2011-03-27 22:21:42. Completed at 2011-03-27 22:21:42. Taken 0 ms
+        <BLANKLINE>
+        <BLANKLINE>
 
         """
         start_time = datetime.now()
@@ -193,7 +202,8 @@ class RequestLogReplayer(object):
         curl.setopt(pycurl.TIMEOUT, 300)
         curl.setopt(pycurl.VERBOSE, 1 if self.verbose else 0)
         try:
-            curl.perform()
+            if not test:
+                curl.perform()
         except Exception, e:
             print("Failed to perform request. Reason: %s" % e)
         complete_time = datetime.now()
@@ -206,8 +216,8 @@ class RequestLogReplayer(object):
         ]
         print '\n'.join(log)
 
-    def _create_timer(self, interval, requests, concurrency, speed):
-        return Timer(interval / speed, self.send_requests, [requests * concurrency])
+    def _create_timer(self, delta, interval, concurrency, speed):
+        return Timer(delta / speed, self.send_requests, [interval, concurrency, speed])
 
     def _flatten_list(self, timer_list):
         return [item for sublist in timer_list for item in sublist]
