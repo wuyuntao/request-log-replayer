@@ -128,10 +128,23 @@ class RequestLogReplayer(object):
         <BLANKLINE>
 
         """
-        timers = [self._create_timer(request, concurrency, speed) for request in requests]
-        print("Started %s replays.\n" % len(timers))
-        for timer in self._flatten_list(timers):
+        # Group requests by intervals
+        groups = {}
+        for request in requests:
+            if request['interval'] in groups:
+                groups[request['interval']].append(request)
+            else:
+                groups[request['interval']] = [request]
+
+        timers = [self._create_timer(interval, group, concurrency, speed) \
+                for interval, group in groups.items()]
+        print("Started %s replays.\n" % (len(requests) * concurrency,))
+        for timer in timers:
             timer.start()
+
+    def send_requests(self, requests):
+        for request in requests:
+            self.send_request(request)
 
     def send_request(self, request):
         """
@@ -179,7 +192,10 @@ class RequestLogReplayer(object):
         curl.setopt(pycurl.MAXREDIRS, 5)
         curl.setopt(pycurl.TIMEOUT, 300)
         curl.setopt(pycurl.VERBOSE, 1 if self.verbose else 0)
-        curl.perform()
+        try:
+            curl.perform()
+        except Exception, e:
+            print("Failed to perform request. Reason: %s" % e)
         complete_time = datetime.now()
 
         log = [
@@ -190,8 +206,8 @@ class RequestLogReplayer(object):
         ]
         print '\n'.join(log)
 
-    def _create_timer(self, request, concurrency, speed):
-        return [Timer(request['interval'] / speed, self.send_request, [request]) for i in range(concurrency)]
+    def _create_timer(self, interval, requests, concurrency, speed):
+        return Timer(interval / speed, self.send_requests, [requests * concurrency])
 
     def _flatten_list(self, timer_list):
         return [item for sublist in timer_list for item in sublist]
@@ -209,6 +225,8 @@ if __name__ == '__main__':
                  help='Ratio of request intervals according to realtime. Default: 1.0')
     p.add_option('-r', '--request', default=None,
                  help='Number of total requests to replay. Default: None')
+    p.add_option('-o', '--offset', default=0,
+                 help='Number of requests to start from. Default: 1')
     p.add_option('-t', '--test', action='store_true', help='Run doctest')
     opts, args = p.parse_args()
 
@@ -220,7 +238,9 @@ if __name__ == '__main__':
     log = open(opts.log).read()
     request_logs = log.split('\n\n\n')
     if opts.request:
-        request_logs = request_logs[:int(opts.request)]
+        request_logs = request_logs[int(opts.offset):int(opts.offset) + int(opts.request)]
+    else:
+        request_logs = request_logs[int(opts.offset):]
     replayer = RequestLogReplayer()
     requests = replayer.parse_log(request_logs, opts.host)
     replayer.replay_requests(requests, int(opts.concurrency), float(opts.speed))
